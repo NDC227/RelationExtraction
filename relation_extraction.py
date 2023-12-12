@@ -5,10 +5,11 @@ import torch
 import torch.nn as nn
 from datasets import load_dataset
 from transformers import AutoTokenizer
-import tqdm
+from tqdm import tqdm
 
 from datasets import load_from_disk
 
+model_folder = "trainer_ckpts/checkpoint-2200"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(device)
 print(torch.__version__)
@@ -57,6 +58,12 @@ if TRAIN:
     model = AutoModelForSequenceClassification.from_pretrained("bert-base-cased", num_labels=19)
     model.to(device)
 
+    # Freeze the BERT encoder for training
+    for name, param in model.named_parameters():
+        if name.startswith("bert.encoder"):
+            param.requires_grad = False
+        print(name, param.requires_grad)
+
     from transformers import TrainingArguments
     training_args = TrainingArguments(per_device_train_batch_size=8,
                                     per_device_eval_batch_size=8,
@@ -90,19 +97,16 @@ if TRAIN:
     )
 
     trainer.train()
-    trainer.save_model("trained_model")
+    trainer.save_model(model_folder)
 
-print(device)
-device = "cpu"
-model = AutoModelForSequenceClassification.from_pretrained("./trained_model").to(device)
+model = AutoModelForSequenceClassification.from_pretrained("./" + model_folder).to(device)
 untrained_model = AutoModelForSequenceClassification.from_pretrained("bert-base-cased", num_labels=19)
-print(next(model.parameters()).device)
-untrained_model.to(device)
+model.to(device)
 
 def inference(model, input):
     # print(input)
     # print(next(model.parameters()).device)
-    pred = model(**input)
+    pred = model(input["input_ids"], input["token_type_ids"], input["attention_mask"])
     logits = pred.logits[0]
     # print(logits)
     class_id = torch.argmax(logits)
@@ -110,7 +114,7 @@ def inference(model, input):
 
 def test(model, data):
     count = 0
-    for datum in data:
+    for datum in tqdm(data):
         datum["input_ids"] = datum["input_ids"].unsqueeze(0).to(device)
         datum["token_type_ids"] = datum["token_type_ids"].unsqueeze(0).to(device)
         datum["attention_mask"] = datum["attention_mask"].unsqueeze(0).to(device)
@@ -120,10 +124,8 @@ def test(model, data):
             count += 1
     return count / len(data)
 
-test_dataset = test_dataset.remove_columns("text")
-
 model_acc = test(model, test_dataset)
 print(model_acc)
 
-untrained_model_acc = test(untrained_model, test_dataset)
-print(untrained_model_acc)
+# untrained_model_acc = test(untrained_model, test_dataset)
+# print(untrained_model_acc)
