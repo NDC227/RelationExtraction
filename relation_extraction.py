@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import scipy
 import sklearn
@@ -45,7 +46,7 @@ train_dataset = load_from_disk("datasets/train.hf")
 test_dataset = load_from_disk("datasets/test.hf")
 train_dataset.set_format(type="torch")
 test_dataset.set_format(type="torch")
-train_dataset = train_dataset.shuffle(seed=0).select(range(1000))
+train_dataset = train_dataset.shuffle(seed=0).select(range(1001))
 test_dataset = test_dataset.shuffle(seed=0).select(range(500))
 train_dataset
 test_dataset
@@ -53,7 +54,7 @@ print(train_dataset)
 print(test_dataset)
 
 from transformers import AutoModelForSequenceClassification
-TRAIN = False
+TRAIN = True
 if TRAIN:
     HF_TRAINER = False
     FREEZE_LAYERS = ["bert.encoder"]
@@ -106,27 +107,45 @@ if TRAIN:
         trainer.save_model(model_folder)
 
     else:
-        from torch.utils.data import DataLoader
+        BATCH_SIZE = 8
         train_dataset = train_dataset.remove_columns(["text"])
         test_dataset = test_dataset.remove_columns(["text"])
-        train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=8)
-        eval_dataloader = DataLoader(test_dataset, batch_size=8)
 
         from torch.optim import AdamW
         optimizer = AdamW(model.parameters(), lr=5e-5)
 
         from transformers import get_scheduler
         num_epochs = 3
-        num_training_steps = num_epochs * len(train_dataloader)
+        num_training_steps = num_epochs * math.ceil(len(train_dataset) / BATCH_SIZE)
         lr_scheduler = get_scheduler(
             name="linear", optimizer=optimizer, num_warmup_steps=0, num_training_steps=num_training_steps
         )
 
         progress_bar = tqdm(range(num_training_steps))
 
+        def get_batches(dataset, batch_size, max_batches=math.inf):
+            batches = []
+            n = len(dataset)
+            idxs = np.arange(n)
+            np.random.shuffle(idxs)
+            print(idxs)
+            for i in range(min(math.ceil(n / batch_size), max_batches)):
+                batch = {}
+                batch["labels"] = torch.stack([dataset[int(idx)]["labels"] for idx in idxs[i*batch_size:i*batch_size+batch_size]])
+                batch["input_ids"] = torch.stack([dataset[int(idx)]["input_ids"] for idx in idxs[i*batch_size:i*batch_size+batch_size]])
+                batch["token_type_ids"] = torch.stack([dataset[int(idx)]["token_type_ids"] for idx in idxs[i*batch_size:i*batch_size+batch_size]])
+                batch["attention_mask"] = torch.stack([dataset[int(idx)]["attention_mask"] for idx in idxs[i*batch_size:i*batch_size+batch_size]])
+                batches.append(batch)
+            return batches
+
         model.train()
         for epoch in range(num_epochs):
-            for batch in train_dataloader:
+            batches = get_batches(train_dataset, BATCH_SIZE)
+            # print(batches)
+            
+            for i in range(len(batches)):
+                batch = batches[i]
+                # print(batch)
                 batch = {k: v.to(device) for k, v in batch.items()}
                 outputs = model(**batch)
                 loss = outputs.loss
@@ -139,7 +158,9 @@ if TRAIN:
         
         metric = evaluate.load("accuracy")
         model.eval()
-        for batch in eval_dataloader:
+        batches = get_batches(test_dataset, BATCH_SIZE)
+        for i in range(len(batches)):
+            batch = batches[i]
             batch = {k: v.to(device) for k, v in batch.items()}
             with torch.no_grad():
                 outputs = model(**batch)
