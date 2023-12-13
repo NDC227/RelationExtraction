@@ -12,9 +12,9 @@ from datasets import load_from_disk
 
 model_folder = "trainer_ckpts/checkpoint-2200"
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(device)
-print(torch.__version__)
-print(torch.version.cuda)
+# print(device)
+# print(torch.__version__)
+# print(torch.version.cuda)
 
 def load_data():
     dataset = load_dataset("sem_eval_2010_task_8")
@@ -46,12 +46,28 @@ train_dataset = load_from_disk("datasets/train.hf")
 test_dataset = load_from_disk("datasets/test.hf")
 train_dataset.set_format(type="torch")
 test_dataset.set_format(type="torch")
-train_dataset = train_dataset.shuffle(seed=0).select(range(1001))
+# train_dataset = train_dataset.shuffle(seed=0).select(range(1001))
 test_dataset = test_dataset.shuffle(seed=0).select(range(500))
-train_dataset
-test_dataset
 print(train_dataset)
 print(test_dataset)
+
+# Re-process data for low-resource training
+# Note: SemEval 2010 Task 8 only has 1 training data point for label 7. All others have at least 50, if not many hundreds.
+from collections import defaultdict
+NUM_PER_CLASS = 10
+data_by_label = defaultdict(list)
+for datum in train_dataset:
+    label = datum["labels"].item()
+    data_by_label[label].append(datum)
+print([(label, len(data_by_label[label])) for label in sorted(data_by_label)])
+
+new_train_dataset = []
+for label in data_by_label:
+    print(min(len(data_by_label[label]), NUM_PER_CLASS))
+    new_train_dataset += list(np.random.choice(data_by_label[label], min(len(data_by_label[label]), NUM_PER_CLASS), replace=False))
+print(len(new_train_dataset))
+
+# quit(0)
 
 from transformers import AutoModelForSequenceClassification
 TRAIN = True
@@ -128,7 +144,6 @@ if TRAIN:
             n = len(dataset)
             idxs = np.arange(n)
             np.random.shuffle(idxs)
-            print(idxs)
             for i in range(min(math.ceil(n / batch_size), max_batches)):
                 batch = {}
                 batch["labels"] = torch.stack([dataset[int(idx)]["labels"] for idx in idxs[i*batch_size:i*batch_size+batch_size]])
@@ -138,38 +153,42 @@ if TRAIN:
                 batches.append(batch)
             return batches
 
-        model.train()
-        for epoch in range(num_epochs):
-            batches = get_batches(train_dataset, BATCH_SIZE)
-            # print(batches)
-            
+        def train_model(model):
+            model.train()
+            for epoch in range(num_epochs):
+                batches = get_batches(train_dataset, BATCH_SIZE)
+                
+                for i in range(len(batches)):
+                    batch = batches[i]
+                    batch = {k: v.to(device) for k, v in batch.items()}
+                    outputs = model(**batch)
+                    loss = outputs.loss
+                    loss.backward()
+
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+        train_model(model)
+        
+        def eval_model(model):
+            metric = evaluate.load("accuracy")
+            model.eval()
+            batches = get_batches(test_dataset, BATCH_SIZE)
             for i in range(len(batches)):
                 batch = batches[i]
-                # print(batch)
                 batch = {k: v.to(device) for k, v in batch.items()}
-                outputs = model(**batch)
-                loss = outputs.loss
-                loss.backward()
+                with torch.no_grad():
+                    outputs = model(**batch)
 
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-        
-        metric = evaluate.load("accuracy")
-        model.eval()
-        batches = get_batches(test_dataset, BATCH_SIZE)
-        for i in range(len(batches)):
-            batch = batches[i]
-            batch = {k: v.to(device) for k, v in batch.items()}
-            with torch.no_grad():
-                outputs = model(**batch)
+                logits = outputs.logits
+                predictions = torch.argmax(logits, dim=-1)
+                metric.add_batch(predictions=predictions, references=batch["labels"])
 
-            logits = outputs.logits
-            predictions = torch.argmax(logits, dim=-1)
-            metric.add_batch(predictions=predictions, references=batch["labels"])
-
-        metric.compute()
+            return metric.compute()
+    
+        model_acc = eval_model(model)
+        print(model_acc)
 
 model = AutoModelForSequenceClassification.from_pretrained("./" + model_folder).to(device)
 untrained_model = AutoModelForSequenceClassification.from_pretrained("bert-base-cased", num_labels=19)
