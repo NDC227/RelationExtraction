@@ -15,7 +15,7 @@ untrained_model = AutoModelForSequenceClassification.from_pretrained("bert-base-
 input = "The <e1>company</e1> fabricates plastic <e2>chairs</e2>."
 input = tokenizer(input, padding="max_length", truncation=True, return_tensors="pt")
 print(input)
-quit(0)
+# quit(0)
 
 def inference(model, input):
     pred = model(**input)
