@@ -1,3 +1,5 @@
 *model/*
 /trainer_ckpts/*
 ~$*
+/datasets*
+.vscode*

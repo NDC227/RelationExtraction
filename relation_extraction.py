@@ -10,25 +10,23 @@ from tqdm import tqdm
 
 from datasets import load_from_disk
 
-model_folder = "trainer_ckpts/checkpoint-2200"
+model_folder = "ten_shot_model"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # print(device)
 # print(torch.__version__)
 # print(torch.version.cuda)
 
-def load_data():
-    dataset = load_dataset("sem_eval_2010_task_8")
+def import_data(dataset_name):
+    dataset = load_dataset(dataset_name)
     train, test = dataset["train"], dataset["test"]
 
     train = train.rename_column("sentence", "text") # combine these?
     train = train.rename_column("relation", "labels")
     test = test.rename_column("sentence", "text")
     test = test.rename_column("relation", "labels")
-
     print(train)
 
     tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-
     def tokenize_function(examples):
         return tokenizer(examples["text"], padding="max_length", truncation=True, return_tensors="pt").to(device)
 
@@ -39,41 +37,91 @@ def load_data():
     train_dataset.save_to_disk("datasets/train.hf")
     test_dataset.save_to_disk("datasets/test.hf")
 
-LOAD_DATA = False
-if LOAD_DATA:
-    load_data()
-train_dataset = load_from_disk("datasets/train.hf")
-test_dataset = load_from_disk("datasets/test.hf")
-train_dataset.set_format(type="torch")
-test_dataset.set_format(type="torch")
-# train_dataset = train_dataset.shuffle(seed=0).select(range(1001))
-test_dataset = test_dataset.shuffle(seed=0).select(range(500))
+def load_data(train_link, test_link):
+    train_dataset = load_from_disk(train_link)
+    test_dataset = load_from_disk(test_link)
+    train_dataset.set_format(type="torch")
+    test_dataset.set_format(type="torch")
+    train_dataset = train_dataset.shuffle(seed=0).select(range(1000))
+    test_dataset = test_dataset.shuffle(seed=0).select(range(500))
+    return train_dataset, test_dataset
+
+IMPORT_DATA = False
+if IMPORT_DATA:
+    import_data("sem_eval_2010_task_8")
+
+train_dataset, test_dataset = load_data("datasets/train.hf", "datasets/test.hf")
 print(train_dataset)
 print(test_dataset)
 
-# Re-process data for low-resource training
-# Note: SemEval 2010 Task 8 only has 1 training data point for label 7. All others have at least 50, if not many hundreds.
 from collections import defaultdict
-NUM_PER_CLASS = 10
-data_by_label = defaultdict(list)
-for datum in train_dataset:
-    label = datum["labels"].item()
-    data_by_label[label].append(datum)
-print([(label, len(data_by_label[label])) for label in sorted(data_by_label)])
+from datasets import Dataset
 
-new_train_dataset = []
-for label in data_by_label:
-    print(min(len(data_by_label[label]), NUM_PER_CLASS))
-    new_train_dataset += list(np.random.choice(data_by_label[label], min(len(data_by_label[label]), NUM_PER_CLASS), replace=False))
-print(len(new_train_dataset))
+def get_data_by_label(dataset):
+    data_by_label = defaultdict(list)
+    for datum in dataset:
+        label = datum["labels"].item()
+        data_by_label[label].append(datum)
+    print([(label, len(data_by_label[label])) for label in sorted(data_by_label)])
+    return data_by_label
+
+def make_low_resource(dataset, num_per_class):
+    # Re-process data for low-resource training
+    # Note: SemEval 2010 Task 8 only has 1 training data point for label 7. All others have at least 50, if not many hundreds.
+    data_by_label = get_data_by_label(dataset)
+
+    new_train_dataset = []
+    for label in data_by_label:
+        # print(min(len(data_by_label[label]), NUM_PER_CLASS))
+        new_train_dataset += list(np.random.choice(data_by_label[label], min(len(data_by_label[label]), num_per_class), replace=False))
+    print("new_dataset_length", len(new_train_dataset))
+
+    new_train_dataset = Dataset.from_list(new_train_dataset)
+    new_train_dataset.set_format("torch")
+    return new_train_dataset
+
+LIMIT_CLASSES = False
+NUM_PER_CLASS = 10
+if LIMIT_CLASSES:
+    train_dataset = make_low_resource(train_dataset, NUM_PER_CLASS)
+# print(train_dataset)
+# print(train_dataset[0])
+# quit(0)
+    
+def balance_classes(dataset):
+    data_by_label = get_data_by_label(dataset)
+    label_counts = [len(data_by_label[key]) for key in data_by_label]
+    print(label_counts)
+
+    percentile = 0.25
+    label_counts = sorted(label_counts)
+    min_count_accepted = label_counts[math.ceil(len(label_counts) * percentile)]
+    amt_to_augment = {label: max(0, min_count_accepted - len(data_by_label[label])) for label in data_by_label}
+    print(amt_to_augment)
+
+    #TODO: This could probably be more concise, but I want to update data_by_label for the debug
+    new_train_dataset = []
+    for key in data_by_label:
+        augmentation = list(np.random.choice(data_by_label[key], amt_to_augment[key], replace=True))
+        data_by_label[key] += augmentation
+        new_train_dataset += data_by_label[key]
+    
+    print([len(data_by_label[key]) for key in data_by_label])
+    # print(sorted([data["text"] for data in data_by_label[12]]))
+    new_train_dataset = Dataset.from_list(new_train_dataset)
+    new_train_dataset.set_format("torch")
+    return new_train_dataset
+
+dataset = balance_classes(train_dataset)
+print(len(dataset))
 
 # quit(0)
 
 from transformers import AutoModelForSequenceClassification
-TRAIN = True
+TRAIN = False
 if TRAIN:
     HF_TRAINER = False
-    FREEZE_LAYERS = ["bert.encoder"]
+    FREEZE_LAYERS = []
 
     model = AutoModelForSequenceClassification.from_pretrained("bert-base-cased", num_labels=19)
     model.to(device)
@@ -175,7 +223,7 @@ if TRAIN:
             metric = evaluate.load("accuracy")
             model.eval()
             batches = get_batches(test_dataset, BATCH_SIZE)
-            for i in range(len(batches)):
+            for i in tqdm(range(len(batches))):
                 batch = batches[i]
                 batch = {k: v.to(device) for k, v in batch.items()}
                 with torch.no_grad():
@@ -190,8 +238,11 @@ if TRAIN:
         model_acc = eval_model(model)
         print(model_acc)
 
+        model.save_pretrained(model_folder, from_pt=True)
+
 model = AutoModelForSequenceClassification.from_pretrained("./" + model_folder).to(device)
 untrained_model = AutoModelForSequenceClassification.from_pretrained("bert-base-cased", num_labels=19)
+model = untrained_model
 model.to(device)
 
 def inference(model, input):
@@ -204,6 +255,7 @@ def inference(model, input):
     return class_id
 
 def test(model, data):
+    model.eval()
     count = 0
     for datum in tqdm(data):
         datum["input_ids"] = datum["input_ids"].unsqueeze(0).to(device)
