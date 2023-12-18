@@ -123,37 +123,37 @@ if RESAMPLE_CLASSES:
 
 from collections import Counter
 from transformers import BertForMaskedLM
+import data_augmentation
 masked_LM_bert = BertForMaskedLM.from_pretrained("bert-base-uncased")
 def augment_data_point(data, method="synonym"):
     text = data["text"]
     if method == "synonym":
-        # print(data["attention_mask"].tolist())
+        # # print(data["attention_mask"].tolist())
 
-        text_counter = Counter(data["attention_mask"].tolist())
-        # print(text_counter)
-        text_length = text_counter[1]
-        # print(text_length)
-        mask_token_index = np.random.randint(text_length)
-        data["input_ids"][mask_token_index] = tokenizer.mask_token_id
+        # text_counter = Counter(data["attention_mask"].tolist())
+        # # print(text_counter)
+        # text_length = text_counter[1]
+        # # print(text_length)
+        # mask_token_index = np.random.randint(text_length)
+        # data["input_ids"][mask_token_index] = tokenizer.mask_token_id
 
-        with torch.no_grad():
-            logits = masked_LM_bert(data["input_ids"].unsqueeze(0), 
-                                    data["token_type_ids"].unsqueeze(0), 
-                                    data["attention_mask"].unsqueeze(0))
+        # with torch.no_grad():
+        #     logits = masked_LM_bert(data["input_ids"].unsqueeze(0), 
+        #                             data["token_type_ids"].unsqueeze(0), 
+        #                             data["attention_mask"].unsqueeze(0))
 
-        # print(data["input_ids"])
-        # print(logits)
-        # print(logits.logits)
-        # print(logits.logits[0])
-        # print(logits.logits[0][mask_token_index])
-        predicted_token_id = logits.logits[0][mask_token_index].argmax()
-        synonym = tokenizer.decode(predicted_token_id)
-        masked_text = tokenizer.decode(data["input_ids"][:text_length])
-        print(predicted_token_id)
-        print(masked_text)
-        print(synonym)
-
-        augmented_text = text
+        # # print(data["input_ids"])
+        # # print(logits)
+        # # print(logits.logits)
+        # # print(logits.logits[0])
+        # # print(logits.logits[0][mask_token_index])
+        # predicted_token_id = logits.logits[0][mask_token_index].argmax()
+        # synonym = tokenizer.decode(predicted_token_id)
+        # masked_text = tokenizer.decode(data["input_ids"][:text_length])
+        # print(predicted_token_id)
+        # print(masked_text)
+        # print(synonym)
+        augmented_text = data_augmentation.replace_synonym(text)
     elif method == "insert":
         augmented_text = text
     elif method == "delete":
@@ -169,13 +169,13 @@ def augment_data_by_class(dataset, num_to_augment, by_class=True):
     if by_class:
         data_by_label = get_data_by_label(dataset)
         label_counts = [len(data_by_label[key]) for key in data_by_label]
-        print(label_counts)
+        # print(label_counts)
         
         for label in data_by_label:
             augmentation = []
             for i in range(num_to_augment):
                 model_data = np.random.choice(data_by_label[label])
-                new_data = augment_data_point(model_data)
+                new_data = data_augmentation.augment_data_point(model_data)
                 augmentation.append(new_data)
             data_by_label[label] += augmentation
 
@@ -185,12 +185,13 @@ def augment_data_by_class(dataset, num_to_augment, by_class=True):
 
         new_train_dataset = Dataset.from_list(new_train_dataset)
         new_train_dataset.set_format("torch")
+        print(sorted([data["text"] for data in data_by_label[0]]))
         return new_train_dataset
     else:
         augmentation = []
         for i in range(num_to_augment):
             model_data = np.random.choice(dataset)
-            new_data = augment_data_point(model_data)
+            new_data = data_augmentation.augment_data_point(model_data)
             augmentation.append(new_data)
         new_train_dataset = list(dataset) + augmentation
         new_train_dataset = Dataset.from_list(new_train_dataset)
@@ -199,7 +200,7 @@ def augment_data_by_class(dataset, num_to_augment, by_class=True):
 
 # print(augment_data_point(train_dataset[0]))
 print(len(train_dataset))
-train_dataset = augment_data_by_class(train_dataset, 5, by_class=False)
+train_dataset = augment_data_by_class(train_dataset, 5, by_class=True)
 print(len(train_dataset))
 
 quit(0)
