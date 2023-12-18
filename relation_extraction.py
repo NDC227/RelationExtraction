@@ -1,7 +1,7 @@
 import math
 import numpy as np
-import scipy
-import sklearn
+# import scipy
+# import sklearn
 import torch
 import torch.nn as nn
 from datasets import load_dataset
@@ -10,8 +10,9 @@ from tqdm import tqdm
 
 from datasets import load_from_disk
 
-model_folder = "ten_shot_model"
+model_folder = "trained_model"
 device = "cuda" if torch.cuda.is_available() else "cpu"
+tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 # print(device)
 # print(torch.__version__)
 # print(torch.version.cuda)
@@ -26,7 +27,6 @@ def import_data(dataset_name):
     test = test.rename_column("relation", "labels")
     print(train)
 
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
     def tokenize_function(examples):
         return tokenizer(examples["text"], padding="max_length", truncation=True, return_tensors="pt").to(device)
 
@@ -43,7 +43,7 @@ def load_data(train_link, test_link):
     train_dataset.set_format(type="torch")
     test_dataset.set_format(type="torch")
     train_dataset = train_dataset.shuffle(seed=0).select(range(1000))
-    test_dataset = test_dataset.shuffle(seed=0).select(range(500))
+    test_dataset = test_dataset.shuffle(seed=0).select(range(50))
     return train_dataset, test_dataset
 
 IMPORT_DATA = False
@@ -80,7 +80,7 @@ def make_low_resource(dataset, num_per_class):
     new_train_dataset.set_format("torch")
     return new_train_dataset
 
-LIMIT_CLASSES = False
+LIMIT_CLASSES = True
 NUM_PER_CLASS = 10
 if LIMIT_CLASSES:
     train_dataset = make_low_resource(train_dataset, NUM_PER_CLASS)
@@ -112,10 +112,97 @@ def balance_classes(dataset):
     new_train_dataset.set_format("torch")
     return new_train_dataset
 
-dataset = balance_classes(train_dataset)
-print(len(dataset))
+RESAMPLE_CLASSES = False
+if RESAMPLE_CLASSES:
+    train_dataset = balance_classes(train_dataset)
+    print(len(train_dataset))
 
-# quit(0)
+# Create a new data point based on an existing data point and matching label, by changing a word
+# @param data should be the standard list of features: text, input_ids, token_type_ids, attention_mask, and a label
+# @return a data point in the same format as above
+
+from collections import Counter
+from transformers import BertForMaskedLM
+masked_LM_bert = BertForMaskedLM.from_pretrained("bert-base-uncased")
+def augment_data_point(data, method="synonym"):
+    text = data["text"]
+    if method == "synonym":
+        # print(data["attention_mask"].tolist())
+
+        text_counter = Counter(data["attention_mask"].tolist())
+        # print(text_counter)
+        text_length = text_counter[1]
+        # print(text_length)
+        mask_token_index = np.random.randint(text_length)
+        data["input_ids"][mask_token_index] = tokenizer.mask_token_id
+
+        with torch.no_grad():
+            logits = masked_LM_bert(data["input_ids"].unsqueeze(0), 
+                                    data["token_type_ids"].unsqueeze(0), 
+                                    data["attention_mask"].unsqueeze(0))
+
+        # print(data["input_ids"])
+        # print(logits)
+        # print(logits.logits)
+        # print(logits.logits[0])
+        # print(logits.logits[0][mask_token_index])
+        predicted_token_id = logits.logits[0][mask_token_index].argmax()
+        synonym = tokenizer.decode(predicted_token_id)
+        masked_text = tokenizer.decode(data["input_ids"][:text_length])
+        print(predicted_token_id)
+        print(masked_text)
+        print(synonym)
+
+        augmented_text = text
+    elif method == "insert":
+        augmented_text = text
+    elif method == "delete":
+        augmented_text = text
+    else:
+        augmented_text = text
+    tokenized = tokenizer(augmented_text)
+    labels = data["labels"]
+    return {"text": augmented_text, "input_ids": tokenized["input_ids"], "token_type_ids": tokenized["token_type_ids"],
+            "attention_mask": tokenized["attention_mask"], "labels": labels}
+
+def augment_data_by_class(dataset, num_to_augment, by_class=True):
+    if by_class:
+        data_by_label = get_data_by_label(dataset)
+        label_counts = [len(data_by_label[key]) for key in data_by_label]
+        print(label_counts)
+        
+        for label in data_by_label:
+            augmentation = []
+            for i in range(num_to_augment):
+                model_data = np.random.choice(data_by_label[label])
+                new_data = augment_data_point(model_data)
+                augmentation.append(new_data)
+            data_by_label[label] += augmentation
+
+        new_train_dataset = []
+        for label in data_by_label:
+            new_train_dataset += data_by_label[label]
+
+        new_train_dataset = Dataset.from_list(new_train_dataset)
+        new_train_dataset.set_format("torch")
+        return new_train_dataset
+    else:
+        augmentation = []
+        for i in range(num_to_augment):
+            model_data = np.random.choice(dataset)
+            new_data = augment_data_point(model_data)
+            augmentation.append(new_data)
+        new_train_dataset = list(dataset) + augmentation
+        new_train_dataset = Dataset.from_list(new_train_dataset)
+        new_train_dataset.set_format("torch")
+        return new_train_dataset 
+
+# print(augment_data_point(train_dataset[0]))
+print(len(train_dataset))
+train_dataset = augment_data_by_class(train_dataset, 5, by_class=False)
+print(len(train_dataset))
+
+quit(0)
 
 from transformers import AutoModelForSequenceClassification
 TRAIN = False
@@ -248,7 +335,9 @@ model.to(device)
 def inference(model, input):
     # print(input)
     # print(next(model.parameters()).device)
-    pred = model(input["input_ids"], input["token_type_ids"], input["attention_mask"])
+    model.eval()
+    with torch.no_grad():
+        pred = model(input["input_ids"], input["token_type_ids"], input["attention_mask"])
     logits = pred.logits[0]
     # print(logits)
     class_id = torch.argmax(logits)
@@ -256,6 +345,8 @@ def inference(model, input):
 
 def test(model, data):
     model.eval()
+    labels = []
+    predictions = []
     count = 0
     for datum in tqdm(data):
         datum["input_ids"] = datum["input_ids"].unsqueeze(0).to(device)
@@ -263,9 +354,19 @@ def test(model, data):
         datum["attention_mask"] = datum["attention_mask"].unsqueeze(0).to(device)
         # print(datum)
         pred = inference(model, datum)
+        labels.append(datum["labels"].item())
+        predictions.append(pred.item())
         if pred.item() == datum["labels"]:
             count += 1
-    return count / len(data)
+
+    accuracy = count / len(data)
+    from collections import Counter
+    print(Counter(predictions))
+
+    from sklearn.metrics import f1_score
+    micro_f1 = f1_score(labels, predictions, average="micro")
+    macro_f1 = f1_score(labels, predictions, average="macro")
+    return accuracy, micro_f1, macro_f1
 
 model_acc = test(model, test_dataset)
 print(model_acc)
