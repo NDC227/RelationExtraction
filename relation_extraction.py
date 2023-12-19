@@ -124,46 +124,46 @@ if RESAMPLE_CLASSES:
 from collections import Counter
 from transformers import BertForMaskedLM
 import data_augmentation
-masked_LM_bert = BertForMaskedLM.from_pretrained("bert-base-uncased")
-def augment_data_point(data, method="synonym"):
-    text = data["text"]
-    if method == "synonym":
-        # # print(data["attention_mask"].tolist())
+# masked_LM_bert = BertForMaskedLM.from_pretrained("bert-base-uncased")
+# def augment_data_point(data, method="synonym"):
+#     text = data["text"]
+#     if method == "synonym":
+#         # print(data["attention_mask"].tolist())
 
-        # text_counter = Counter(data["attention_mask"].tolist())
-        # # print(text_counter)
-        # text_length = text_counter[1]
-        # # print(text_length)
-        # mask_token_index = np.random.randint(text_length)
-        # data["input_ids"][mask_token_index] = tokenizer.mask_token_id
+#         text_counter = Counter(data["attention_mask"].tolist())
+#         # print(text_counter)
+#         text_length = text_counter[1]
+#         # print(text_length)
+#         mask_token_index = np.random.randint(text_length)
+#         data["input_ids"][mask_token_index] = tokenizer.mask_token_id
 
-        # with torch.no_grad():
-        #     logits = masked_LM_bert(data["input_ids"].unsqueeze(0), 
-        #                             data["token_type_ids"].unsqueeze(0), 
-        #                             data["attention_mask"].unsqueeze(0))
+#         with torch.no_grad():
+#             logits = masked_LM_bert(data["input_ids"].unsqueeze(0), 
+#                                     data["token_type_ids"].unsqueeze(0), 
+#                                     data["attention_mask"].unsqueeze(0))
 
-        # # print(data["input_ids"])
-        # # print(logits)
-        # # print(logits.logits)
-        # # print(logits.logits[0])
-        # # print(logits.logits[0][mask_token_index])
-        # predicted_token_id = logits.logits[0][mask_token_index].argmax()
-        # synonym = tokenizer.decode(predicted_token_id)
-        # masked_text = tokenizer.decode(data["input_ids"][:text_length])
-        # print(predicted_token_id)
-        # print(masked_text)
-        # print(synonym)
-        augmented_text = data_augmentation.replace_synonym(text)
-    elif method == "insert":
-        augmented_text = text
-    elif method == "delete":
-        augmented_text = text
-    else:
-        augmented_text = text
-    tokenized = tokenizer(augmented_text)
-    labels = data["labels"]
-    return {"text": augmented_text, "input_ids": tokenized["input_ids"], "token_type_ids": tokenized["token_type_ids"],
-            "attention_mask": tokenized["attention_mask"], "labels": labels}
+#         # print(data["input_ids"])
+#         # print(logits)
+#         # print(logits.logits)
+#         # print(logits.logits[0])
+#         # print(logits.logits[0][mask_token_index])
+#         predicted_token_id = logits.logits[0][mask_token_index].argmax()
+#         synonym = tokenizer.decode(predicted_token_id)
+#         masked_text = tokenizer.decode(data["input_ids"][:text_length])
+#         print(predicted_token_id)
+#         print(masked_text)
+#         print(synonym)
+#         augmented_text = data_augmentation.replace_synonym(text)
+#     elif method == "insert":
+#         augmented_text = text
+#     elif method == "delete":
+#         augmented_text = text
+#     else:
+#         augmented_text = text
+#     tokenized = tokenizer(augmented_text)
+#     labels = data["labels"]
+#     return {"text": augmented_text, "input_ids": tokenized["input_ids"], "token_type_ids": tokenized["token_type_ids"],
+#             "attention_mask": tokenized["attention_mask"], "labels": labels}
 
 def augment_data_by_class(dataset, num_to_augment, by_class=True):
     if by_class:
